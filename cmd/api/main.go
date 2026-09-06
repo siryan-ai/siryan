@@ -23,12 +23,15 @@ func main() {
 		c.JSON(200, gin.H{"status": "ok", "service": "siryan-api"})
 	})
 
+	chat := handlers.NewChatHandler()
+
 	api := r.Group("/api/v1")
 	{
 		api.POST("/auth/register", auth.Register)
 		api.POST("/auth/login", auth.Login)
 		api.GET("/auth/me", auth.Me)
 		api.POST("/auth/forgot-password", auth.ForgotPassword)
+		api.POST("/chat", chat.Chat)
 	}
 
 	port := cfg.Port
