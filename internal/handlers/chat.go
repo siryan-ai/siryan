@@ -34,7 +34,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	}
 
 	if req.Model == "" {
-		req.Model = "llama-3.1-8b-instant"
+		req.Model = "llama-3.3-70b-versatile"
 	}
 
 	payload := map[string]interface{}{
