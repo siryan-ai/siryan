@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-s
-	"github.com/efeca/siryan-api/internal/config"
+
 	"github.com/gin-gonic/gin"
+	"github.com/siryan-ai/siryan/internal/config"
 )
 
 type AuthHandler struct {

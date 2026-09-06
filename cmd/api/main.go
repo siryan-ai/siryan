@@ -1,12 +1,11 @@
-// cmd/api/main.go
 package main
 
 import (
 	"log"
 
-	"github.com/efeca/siryan-api/internal/config"
-	"github.com/efeca/siryan-api/internal/handlers"
 	"github.com/gin-gonic/gin"
+	"github.com/siryan-ai/siryan/internal/config"
+	"github.com/siryan-ai/siryan/internal/handlers"
 )
 
 func main() {
