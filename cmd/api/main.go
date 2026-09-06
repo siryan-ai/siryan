@@ -28,6 +28,7 @@ func main() {
 		api.POST("/auth/register", auth.Register)
 		api.POST("/auth/login", auth.Login)
 		api.GET("/auth/me", auth.Me)
+		api.POST("/auth/forgot-password", auth.ForgotPassword)
 	}
 
 	port := cfg.Port
