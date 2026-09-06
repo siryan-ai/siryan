@@ -8,13 +8,13 @@ import (
 	"os"
 
 	"github.com/gin-gonic/gin"
+	"github.com/siryan-ai/siryan/internal/chatutil"
+	"github.com/siryan-ai/siryan/internal/prompt"
 )
 
 type ChatHandler struct{}
 
-func NewChatHandler() *ChatHandler {
-	return &ChatHandler{}
-}
+func NewChatHandler() *ChatHandler { return &ChatHandler{} }
 
 type chatMessage struct {
 	Role    string `json:"role"`
@@ -26,6 +26,14 @@ type chatRequest struct {
 	Model    string        `json:"model"`
 }
 
+type chatResponse struct {
+	ID       string      `json:"id"`
+	Model    string      `json:"model"`
+	Content  string      `json:"content"`
+	Thinking string      `json:"thinking,omitempty"`
+	Usage    interface{} `json:"usage,omitempty"`
+}
+
 func (h *ChatHandler) Chat(c *gin.Context) {
 	var req chatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -33,17 +41,32 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		return
 	}
 
-	if req.Model == "" {
-		req.Model = "qwen/qwen3.6-27b"
+	model := req.Model
+	if model == "" {
+		model = "qwen/qwen3.6-27b"
 	}
+
+	system := prompt.Build(prompt.PromptInput{
+		User: prompt.UserContext{
+			Language: "tr",
+		},
+		Session: prompt.SessionContext{
+			Model:    model,
+			Platform: "flutter",
+		},
+	})
+
+	messages := []chatMessage{
+		{Role: "system", Content: system},
+	}
+	messages = append(messages, req.Messages...)
 
 	payload := map[string]interface{}{
-		"model":       req.Model,
-		"messages":    req.Messages,
+		"model":       model,
+		"messages":    messages,
 		"temperature": 0.7,
-		"max_tokens":  1024,
+		"max_tokens":  2048,
 	}
-
 	body, _ := json.Marshal(payload)
 
 	httpReq, err := http.NewRequest(
@@ -52,10 +75,9 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		bytes.NewReader(body),
 	)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "request create failed"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "request failed"})
 		return
 	}
-
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+os.Getenv("GROQ_API_KEY"))
 
@@ -67,5 +89,34 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	c.Data(resp.StatusCode, "application/json", respBody)
+	if resp.StatusCode != http.StatusOK {
+		c.Data(resp.StatusCode, "application/json", respBody)
+		return
+	}
+
+	var groqResp struct {
+		ID      string `json:"id"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage interface{} `json:"usage"`
+	}
+	if err := json.Unmarshal(respBody, &groqResp); err != nil || len(groqResp.Choices) == 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid groq response"})
+		return
+	}
+
+	raw := groqResp.Choices[0].Message.Content
+	content, thinking := chatutil.SplitThinking(raw)
+
+	c.JSON(http.StatusOK, chatResponse{
+		ID:       groqResp.ID,
+		Model:    groqResp.Model,
+		Content:  content,
+		Thinking: thinking,
+		Usage:    groqResp.Usage,
+	})
 }
