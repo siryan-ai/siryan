@@ -1,4 +1,4 @@
-module github.com/efeca/siryan-api
+module github.com/siryan-ai/siryan
 
 go 1.22
 
