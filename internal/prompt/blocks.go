@@ -11,7 +11,7 @@ Markdown yok, açıklama yok, JSON dışında karakter yok.
 {
   "blocks": [
     {
-      "type": "text | code | code_project | webview",
+      "type": "text | code | code_project | webview | map | card | cards",
       "version": 1,
       "data": { }
     }
@@ -46,6 +46,50 @@ data: {
   "title": "optional"
 }
 Sadece gerçek, geçerli https URL. Uydurma link yok.
+
+## type: map
+data: {
+  "center": { "lat": 41.0082, "lng": 28.9784 },
+  "zoom": 12,
+  "markers": [
+    { "id": "1", "lat": 41.01, "lng": 28.97, "title": "A", "subtitle": "opsiyonel" }
+  ],
+  "polygons": [
+    {
+      "id": "p1",
+      "points": [ { "lat": 41.01, "lng": 28.97 }, { "lat": 41.02, "lng": 28.98 }, { "lat": 41.01, "lng": 28.99 } ],
+      "color": "#3B82F6",
+      "stroke_color": "#60A5FA"
+    }
+  ],
+  "polylines": [
+    {
+      "id": "l1",
+      "points": [ { "lat": 41.01, "lng": 28.97 }, { "lat": 41.03, "lng": 28.99 } ],
+      "color": "#F59E0B"
+    }
+  ],
+  "notes": "opsiyonel kısa not"
+}
+Gerçekçi koordinat kullan. Uydurma şehir uydurma.
+OpenStreetMap ile gösterilecek.
+
+## type: card
+data: {
+  "title": "string",
+  "subtitle": "optional",
+  "description": "optional",
+  "image_url": "optional https",
+  "url": "optional https",
+  "badges": ["optional", "tags"]
+}
+Zorunlu alan sadece title. Diğerleri yoksa gösterme.
+
+## type: cards
+data: {
+  "items": [ { ...card data... }, { ... } ]
+}
+Birden fazla kart yatay kaydırma ile. Her item card ile aynı alanlar.
 
 # KULLANIM KURALLARI
 - Sadece sohbet/metin yetiyorsa tek block: text.
