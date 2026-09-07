@@ -1,3 +1,5 @@
+// internal/handlers/chat.go
+
 package handlers
 
 import (
@@ -19,7 +21,7 @@ type ChatHandler struct {
 
 func NewChatHandler() *ChatHandler {
 	return &ChatHandler{
-		client: &http.Client{Timeout: 45 * time.Second},
+		client: &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -32,15 +34,6 @@ type chatRequest struct {
 	Messages []chatMessage `json:"messages" binding:"required"`
 	Model    string        `json:"model"`
 	Mode     string        `json:"mode"` // empathy | critical
-}
-
-type chatResponse struct {
-	ID       string      `json:"id"`
-	Model    string      `json:"model"`
-	Mode     string      `json:"mode"`
-	Content  string      `json:"content"`
-	Thinking string      `json:"thinking,omitempty"`
-	Usage    interface{} `json:"usage,omitempty"`
 }
 
 func (h *ChatHandler) Chat(c *gin.Context) {
@@ -68,7 +61,6 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	messages := []chatMessage{{Role: "system", Content: system}}
 	messages = append(messages, req.Messages...)
 
-	// Go dilinde ternary operator (? :) olmadığı için if/else kullanıyoruz
 	temperature := 0.4
 	if mode == "empathy" {
 		temperature = 0.6
@@ -78,13 +70,12 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		"model":       model,
 		"messages":    messages,
 		"temperature": temperature,
-		"max_tokens":  512, // kısa tut
+		"max_tokens":  3072,
 	}
 	body, _ := json.Marshal(payload)
 
 	var respBody []byte
 	var status int
-	var lastErr error
 
 	for attempt := 0; attempt < 2; attempt++ {
 		httpReq, err := http.NewRequest(
@@ -101,7 +92,6 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 
 		resp, err := h.client.Do(httpReq)
 		if err != nil {
-			lastErr = err
 			time.Sleep(400 * time.Millisecond)
 			continue
 		}
@@ -110,15 +100,12 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		status = resp.StatusCode
 		resp.Body.Close()
 
-		// retry only transient
 		if status == 429 || status >= 500 {
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 		break
 	}
-
-	_ = lastErr // derleyici uyarısını önlemek için
 
 	if respBody == nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "model servisine ulaşılamadı"})
@@ -148,18 +135,26 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	}
 
 	raw := groqResp.Choices[0].Message.Content
-	content, thinking := chatutil.SplitThinking(raw)
-	if content == "" {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "boş cevap"})
-		return
+	_, thinking := chatutil.SplitThinking(raw)
+	blocks, content, ok := chatutil.ParseBlocks(raw)
+	if !ok || content == "" {
+		content = "Cevap alınamadı"
+		if len(blocks) == 0 {
+			blocks = []chatutil.Block{{
+				Type:    "text",
+				Version: 1,
+				Data:    map[string]interface{}{"markdown": content},
+			}}
+		}
 	}
 
-	c.JSON(http.StatusOK, chatResponse{
-		ID:       groqResp.ID,
-		Model:    groqResp.Model,
-		Mode:     mode,
-		Content:  content,
-		Thinking: thinking,
-		Usage:    groqResp.Usage,
+	c.JSON(http.StatusOK, gin.H{
+		"id":       groqResp.ID,
+		"model":    groqResp.Model,
+		"mode":     mode,
+		"content":  content,
+		"thinking": thinking,
+		"blocks":   blocks,
+		"usage":    groqResp.Usage,
 	})
 }
