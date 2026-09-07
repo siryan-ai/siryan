@@ -11,7 +11,7 @@ Markdown yok, açıklama yok, JSON dışında karakter yok.
 {
   "blocks": [
     {
-      "type": "text | code | code_project | webview | map | card | cards",
+      "type": "text | code | code_project | webview | map | card | cards | chart | table | design",
       "version": 1,
       "data": { }
     }
@@ -39,6 +39,39 @@ data: {
   ]
 }
 HTML/CSS/JS önizlenebilir projelerde entry html olsun.
+
+## type: chart
+data: {
+  "chart_type": "bar | line | pie",
+  "title": "optional",
+  "labels": ["Ocak", "Şubat", "Mart"],
+  "series": [
+    { "name": "Satış", "values": [12, 19, 8], "color": "#3B82F6" }
+  ],
+  "unit": "optional"
+}
+Pie için tek series. Renk yoksa sistem varsayılan kullanır.
+Uydurma veri uyduruyorsan kısa text block ile "örnek veri" de.
+
+## type: table
+data: {
+  "caption": "optional",
+  "columns": ["Ürün", "Adet", "Tutar"],
+  "rows": [
+    ["A", "3", "120"],
+    ["B", "1", "40"]
+  ]
+}
+
+## type: design
+data: {
+  "title": "optional",
+  "format": "svg",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 128 128\">...</svg>",
+  "notes": "optional"
+}
+Sadece geçerli, tek parça SVG. Canva'ya yapıştırmaya uygun olsun.
+İkon / logo / basit illüstrasyon. Aşırı karmaşık sahne yok.
 
 ## type: webview
 data: {
