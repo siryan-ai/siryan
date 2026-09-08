@@ -8,9 +8,11 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/siryan-ai/siryan/internal/agent"
 	"github.com/siryan-ai/siryan/internal/chatutil"
 	"github.com/siryan-ai/siryan/internal/prompt"
 )
@@ -36,6 +38,50 @@ type chatRequest struct {
 	Mode     string        `json:"mode"` // empathy | critical
 }
 
+func looksLikeResearch(msgs []chatMessage) (string, bool) {
+	if len(msgs) == 0 {
+		return "", false
+	}
+	q := strings.ToLower(strings.TrimSpace(msgs[len(msgs)-1].Content))
+	if q == "" {
+		return "", false
+	}
+	keys := []string{
+		"araştır",
+		"arastir",
+		"research",
+		"güncel",
+		"guncel",
+		"webde",
+		"internetten",
+		"kaynak bul",
+		"doğrula",
+		"dogrula",
+		"son durum",
+		"haberler",
+		"haber ",
+	}
+	for _, k := range keys {
+		if strings.Contains(q, k) {
+			return msgs[len(msgs)-1].Content, true
+		}
+	}
+	return "", false
+}
+
+func firstTextFromBlocks(blocks []map[string]interface{}) string {
+	for _, b := range blocks {
+		if b["type"] == "text" {
+			if data, ok := b["data"].(map[string]interface{}); ok {
+				if md, ok := data["markdown"].(string); ok {
+					return md
+				}
+			}
+		}
+	}
+	return "Araştırma tamamlandı"
+}
+
 func (h *ChatHandler) Chat(c *gin.Context) {
 	var req chatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -52,6 +98,30 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		mode = "critical"
 	}
 
+	// Research agent köprüsü
+	if query, ok := looksLikeResearch(req.Messages); ok {
+		result, err := agent.RunResearch(c.Request.Context(), agent.ResearchRequest{
+			Query:   query,
+			Locale:  "tr",
+			MaxURLs: 4,
+		})
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"id":       "research",
+			"model":    "agent-research",
+			"mode":     mode,
+			"content":  firstTextFromBlocks(result.Blocks),
+			"thinking": "",
+			"blocks":   result.Blocks,
+			"sources":  result.Sources,
+			"notes":    result.Notes,
+		})
+		return
+	}
+
 	model := req.Model
 	if model == "" {
 		model = "qwen/qwen3.6-27b"
@@ -61,6 +131,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	messages := []chatMessage{{Role: "system", Content: system}}
 	messages = append(messages, req.Messages...)
 
+	// Temperature değerini standart if/else bloğu ile belirliyoruz
 	temperature := 0.4
 	if mode == "empathy" {
 		temperature = 0.6

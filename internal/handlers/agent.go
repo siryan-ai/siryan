@@ -1,3 +1,5 @@
+// internal/handlers/agent.go
+
 package handlers
 
 import (
@@ -9,7 +11,9 @@ import (
 
 type AgentHandler struct{}
 
-func NewAgentHandler() *AgentHandler { return &AgentHandler{} }
+func NewAgentHandler() *AgentHandler {
+	return &AgentHandler{}
+}
 
 func (h *AgentHandler) Research(c *gin.Context) {
 	var req agent.ResearchRequest
@@ -25,25 +29,14 @@ func (h *AgentHandler) Research(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"query":   result.Query,
-		"sources": result.Sources,
-		"claims":  result.Claims,
-		"blocks":  result.Blocks,
-		"notes":   result.Notes,
-		// Flutter chat ile aynı dil
-		"content": firstText(result.Blocks),
+		"query":    result.Query,
+		"sources":  result.Sources,
+		"claims":   result.Claims,
+		"blocks":   result.Blocks,
+		"notes":    result.Notes,
+		"content":  FirstTextFromBlocks(result.Blocks),
+		"id":       "research",
+		"model":    "agent-research",
+		"thinking": "",
 	})
-}
-
-func firstText(blocks []map[string]interface{}) string {
-	for _, b := range blocks {
-		if b["type"] == "text" {
-			if data, ok := b["data"].(map[string]interface{}); ok {
-				if md, ok := data["markdown"].(string); ok {
-					return md
-				}
-			}
-		}
-	}
-	return "Araştırma tamamlandı"
 }
