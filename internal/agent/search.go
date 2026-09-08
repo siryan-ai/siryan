@@ -1,11 +1,8 @@
-// internal/agent/search.go
-
 package agent
 
 import (
 	"context"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -18,27 +15,16 @@ type SearchHit struct {
 	Snippet string
 }
 
-// DuckDuckGo HTML (API key yok). Kırılgan olabilir; SearXNG ile değiştirilebilir.
 func SearchWeb(parent context.Context, query string, limit int) ([]SearchHit, error) {
 	if limit <= 0 {
 		limit = 5
 	}
-	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 35*time.Second)
 	defer cancel()
 
-	q := url.QueryEscape(query)
-	searchURL := "https://html.duckduckgo.com/html/?q=" + q
+	searchURL := "https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query)
 
-	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx,
-		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.ExecPath(os.Getenv("CHROME_PATH")), // boşsa default
-			chromedp.Flag("headless", true),
-			chromedp.Flag("disable-gpu", true),
-			chromedp.Flag("no-sandbox", true),
-			chromedp.Flag("disable-dev-shm-usage", true),
-			chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"),
-		)...,
-	)
+	allocCtx, allocCancel := chromeAllocator(ctx)
 	defer allocCancel()
 
 	taskCtx, taskCancel := chromedp.NewContext(allocCtx)
@@ -51,7 +37,6 @@ func SearchWeb(parent context.Context, query string, limit int) ([]SearchHit, er
 	  nodes.forEach((a) => {
 	    const title = (a.textContent || '').trim();
 	    let href = a.href || '';
-	    // DDG redirect
 	    try {
 	      const u = new URL(href);
 	      const uddg = u.searchParams.get('uddg');
@@ -73,7 +58,7 @@ func SearchWeb(parent context.Context, query string, limit int) ([]SearchHit, er
 	err := chromedp.Run(taskCtx,
 		chromedp.Navigate(searchURL),
 		chromedp.WaitReady("body", chromedp.ByQuery),
-		chromedp.Sleep(1200*time.Millisecond),
+		chromedp.Sleep(1500*time.Millisecond),
 		chromedp.Evaluate(js, &items),
 	)
 	if err != nil {

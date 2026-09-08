@@ -1,12 +1,22 @@
 services:
   - type: web
     name: siryan-api
-    runtime: go
+    runtime: docker
     plan: free
-    buildCommand: go build -o bin/api ./cmd/api
-    startCommand: ./bin/api
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     envVars:
+      - key: PORT
+        value: "10000"
       - key: GIN_MODE
         value: release
-      - key: PORT
-        value: 10000
+      - key: CHROME_PATH
+        value: /headless-shell/headless-shell
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
