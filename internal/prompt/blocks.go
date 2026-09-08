@@ -11,7 +11,7 @@ Markdown yok, açıklama yok, JSON dışında karakter yok.
 {
   "blocks": [
     {
-      "type": "text | code | code_project | webview | map | card | cards | chart | table | design",
+      "type": "text | code | code_project | webview | map | card | cards | chart | table | design | question | form",
       "version": 1,
       "data": { }
     }
@@ -106,6 +106,69 @@ data: {
 }
 Gerçekçi koordinat kullan. Uydurma şehir uydurma.
 OpenStreetMap ile gösterilecek.
+
+## type: question
+data: {
+  "prompt": "string",
+  "persist": "none | session | local | user",
+  "multi": false,
+  "options": [
+    {
+      "id": "a",
+      "label": "Şık A",
+      "correct": true,
+      "next_blocks": [
+        { "type": "text", "version": 1, "data": { "markdown": "Doğru. ..." } }
+      ]
+    },
+    {
+      "id": "b",
+      "label": "Şık B",
+      "correct": false,
+      "next_blocks": [
+        { "type": "text", "version": 1, "data": { "markdown": "Bu değil. ..." } }
+      ]
+    }
+  ]
+}
+correct opsiyonel (quiz değilse yok).
+next_blocks: seçilince AYNI mesajın altında gösterilir; API çağrısı YOK.
+
+## type: form
+data: {
+  "form_id": "optional",
+  "title": "optional",
+  "persist": "none | session | local | user",
+  "fields": [
+    {
+      "id": "name",
+      "type": "text | number | select | toggle",
+      "label": "Ad",
+      "required": true,
+      "placeholder": "optional",
+      "options": ["sadece select"]
+    }
+  ],
+  "submit_label": "Gönder",
+  "branches": [
+    {
+      "when": { "field": "name", "op": "eq", "value": "Ali" },
+      "next_blocks": [ { "type": "text", "version": 1, "data": { "markdown": "Merhaba Ali" } } ]
+    },
+    {
+      "default": true,
+      "next_blocks": [ { "type": "text", "version": 1, "data": { "markdown": "Teşekkürler" } } ]
+    }
+  ]
+}
+branches yoksa tek next_blocks kullanılabilir:
+"next_blocks": [ ... ]
+
+op: eq | ne | contains | gt | lt | gte | lte | empty | not_empty
+
+# GENEL KURAL (tüm tipler)
+Interactive sonuçlar next_blocks ile aynı cevap içinde ilerler.
+Yeni model çağrısı YOK. UI dinamik görünür; içerik önceden hazırdır.
 
 ## type: card
 data: {
