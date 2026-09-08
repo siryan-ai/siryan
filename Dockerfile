@@ -21,5 +21,8 @@ WORKDIR /app
 COPY --from=build /out/api /app/api
 RUN chmod +x /app/api
 
-EXPOSE 10000
+# ÖNEMLİ: base image ENTRYPOINT'ini iptal et
+ENTRYPOINT []
 CMD ["/app/api"]
+
+EXPOSE 10000
