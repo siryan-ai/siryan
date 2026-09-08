@@ -2,11 +2,14 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
-
-	"github.com/chromedp/chromedp"
 )
 
 type SearchHit struct {
@@ -15,139 +18,199 @@ type SearchHit struct {
 	Snippet string
 }
 
-func SearchWeb(parent context.Context, query string, limit int) ([]SearchHit, error) {
+var httpClient = &http.Client{Timeout: 20 * time.Second}
+
+func SearchWeb(ctx context.Context, query string, limit int) ([]SearchHit, error) {
 	if limit <= 0 {
 		limit = 5
 	}
 
-	hits, err := searchDDG(parent, query, limit)
-	if err == nil && len(hits) > 0 {
-		return hits, nil
+	// 1) Brave (opsiyonel key — en stabil)
+	if key := os.Getenv("BRAVE_API_KEY"); key != "" {
+		if hits, err := searchBrave(ctx, query, limit, key); err == nil && len(hits) > 0 {
+			return hits, nil
+		}
 	}
 
-	hits2, err2 := searchBing(parent, query, limit)
-	if err2 == nil && len(hits2) > 0 {
-		return hits2, nil
+	// 2) Wikipedia + DDG Instant Answer (keysiz)
+	var all []SearchHit
+	if hits, err := searchWikipedia(ctx, query, limit); err == nil {
+		all = append(all, hits...)
+	}
+	if hits, err := searchDDGInstant(ctx, query, limit); err == nil {
+		all = append(all, hits...)
 	}
 
+	return dedupeHitsMaps(all, limit), nil
+}
+
+func searchBrave(ctx context.Context, query string, limit int, key string) ([]SearchHit, error) {
+	u := "https://api.search.brave.com/res/v1/web/search?q=" + url.QueryEscape(query) + "&count=" + fmt.Sprintf("%d", limit)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
-	if err2 != nil {
-		return nil, err2
-	}
-	return []SearchHit{}, nil
-}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Subscription-Token", key)
 
-func searchDDG(parent context.Context, query string, limit int) ([]SearchHit, error) {
-	ctx, cancel := context.WithTimeout(parent, 40*time.Second)
-	defer cancel()
-
-	searchURL := "https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query)
-	allocCtx, allocCancel := chromeAllocator(ctx)
-	defer allocCancel()
-	taskCtx, taskCancel := chromedp.NewContext(allocCtx)
-	defer taskCancel()
-
-	var items []map[string]string
-	js := `(() => {
-	  const out = [];
-	  const push = (title, href, snippet) => {
-	    if (!title || !href) return;
-	    try {
-	      const u = new URL(href, location.origin);
-	      href = u.href;
-	      const uddg = u.searchParams.get('uddg');
-	      if (uddg) href = decodeURIComponent(uddg);
-	    } catch (e) {}
-	    if (!href.startsWith('http')) return;
-	    if (href.includes('duckduckgo.com')) return;
-	    out.push({ title: title.trim(), url: href, snippet: (snippet||'').trim() });
-	  };
-	  document.querySelectorAll('a.result__a').forEach(a => {
-	    let sn = '';
-	    const p = a.closest('.result');
-	    if (p) {
-	      const s = p.querySelector('.result__snippet, a.result__snippet');
-	      if (s) sn = s.textContent || '';
-	    }
-	    push(a.textContent, a.href, sn);
-	  });
-	  document.querySelectorAll('a[data-testid="result-title-a"], a.result-link').forEach(a => {
-	    push(a.textContent, a.href, '');
-	  });
-	  return out;
-	})()`
-
-	err := chromedp.Run(taskCtx,
-		chromedp.Navigate(searchURL),
-		chromedp.WaitReady("body", chromedp.ByQuery),
-		chromedp.Sleep(2*time.Second),
-		chromedp.Evaluate(js, &items),
-	)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	return dedupeHits(items, limit), nil
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("brave %d", resp.StatusCode)
+	}
+
+	var parsed struct {
+		Web struct {
+			Results []struct {
+				Title       string `json:"title"`
+				URL         string `json:"url"`
+				Description string `json:"description"`
+			} `json:"results"`
+		} `json:"web"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	hits := make([]SearchHit, 0, len(parsed.Web.Results))
+	for _, r := range parsed.Web.Results {
+		hits = append(hits, SearchHit{URL: r.URL, Title: r.Title, Snippet: r.Description})
+	}
+	return hits, nil
 }
 
-func searchBing(parent context.Context, query string, limit int) ([]SearchHit, error) {
-	ctx, cancel := context.WithTimeout(parent, 40*time.Second)
-	defer cancel()
-
-	searchURL := "https://www.bing.com/search?q=" + url.QueryEscape(query)
-	allocCtx, allocCancel := chromeAllocator(ctx)
-	defer allocCancel()
-	taskCtx, taskCancel := chromedp.NewContext(allocCtx)
-	defer taskCancel()
-
-	var items []map[string]string
-	js := `(() => {
-	  const out = [];
-	  document.querySelectorAll('#b_results > li.b_algo').forEach(li => {
-	    const a = li.querySelector('h2 a');
-	    if (!a) return;
-	    const title = (a.textContent || '').trim();
-	    const href = a.href || '';
-	    let snippet = '';
-	    const c = li.querySelector('.b_caption p, .b_lineclamp2, .b_lineclamp3');
-	    if (c) snippet = (c.textContent || '').trim();
-	    if (title && href && href.startsWith('http') && !href.includes('bing.com')) {
-	      out.push({ title, url: href, snippet });
-	    }
-	  });
-	  return out;
-	})()`
-
-	err := chromedp.Run(taskCtx,
-		chromedp.Navigate(searchURL),
-		chromedp.WaitReady("body", chromedp.ByQuery),
-		chromedp.Sleep(2*time.Second),
-		chromedp.Evaluate(js, &items),
-	)
+func searchWikipedia(ctx context.Context, query string, limit int) ([]SearchHit, error) {
+	// opensearch
+	api := "https://en.wikipedia.org/w/api.php?action=opensearch&limit=" + fmt.Sprintf("%d", limit) +
+		"&namespace=0&format=json&search=" + url.QueryEscape(query)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, api, nil)
 	if err != nil {
 		return nil, err
 	}
-	return dedupeHits(items, limit), nil
-}
+	req.Header.Set("User-Agent", "SiryanResearch/1.0 (contact: siryan-ai)")
 
-func dedupeHits(items []map[string]string, limit int) []SearchHit {
-	hits := make([]SearchHit, 0, limit)
-	seen := map[string]bool{}
-	for _, it := range items {
-		u := strings.TrimSpace(it["url"])
-		if u == "" || seen[u] {
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("wiki opensearch %d", resp.StatusCode)
+	}
+
+	// ["query", [titles], [descs], [urls]]
+	var arr []json.RawMessage
+	if err := json.Unmarshal(body, &arr); err != nil || len(arr) < 4 {
+		return nil, fmt.Errorf("wiki parse")
+	}
+	var titles, descs, urls []string
+	_ = json.Unmarshal(arr[1], &titles)
+	_ = json.Unmarshal(arr[2], &descs)
+	_ = json.Unmarshal(arr[3], &urls)
+
+	hits := make([]SearchHit, 0, len(titles))
+	for i := range titles {
+		u := ""
+		if i < len(urls) {
+			u = urls[i]
+		}
+		sn := ""
+		if i < len(descs) {
+			sn = descs[i]
+		}
+		if u == "" {
 			continue
 		}
-		seen[u] = true
+		hits = append(hits, SearchHit{Title: titles[i], URL: u, Snippet: sn})
+	}
+	return hits, nil
+}
+
+func searchDDGInstant(ctx context.Context, query string, limit int) ([]SearchHit, error) {
+	u := "https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q=" + url.QueryEscape(query)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "SiryanResearch/1.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("ddg %d", resp.StatusCode)
+	}
+
+	var parsed struct {
+		AbstractURL   string `json:"AbstractURL"`
+		AbstractText  string `json:"AbstractText"`
+		Heading       string `json:"Heading"`
+		RelatedTopics []struct {
+			Text     string `json:"Text"`
+			FirstURL string `json:"FirstURL"`
+		} `json:"RelatedTopics"`
+		Results []struct {
+			Text     string `json:"Text"`
+			FirstURL string `json:"FirstURL"`
+		} `json:"Results"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+
+	var hits []SearchHit
+	if parsed.AbstractURL != "" {
 		hits = append(hits, SearchHit{
-			URL:     u,
-			Title:   strings.TrimSpace(it["title"]),
-			Snippet: strings.TrimSpace(it["snippet"]),
+			URL:     parsed.AbstractURL,
+			Title:   nonEmpty(parsed.Heading, parsed.AbstractURL),
+			Snippet: parsed.AbstractText,
 		})
+	}
+	for _, r := range parsed.Results {
+		if r.FirstURL == "" {
+			continue
+		}
+		hits = append(hits, SearchHit{URL: r.FirstURL, Title: r.Text, Snippet: r.Text})
+	}
+	for _, r := range parsed.RelatedTopics {
+		if r.FirstURL == "" {
+			continue
+		}
+		hits = append(hits, SearchHit{URL: r.FirstURL, Title: r.Text, Snippet: r.Text})
 		if len(hits) >= limit {
 			break
 		}
 	}
-	return hits
+	return hits, nil
+}
+
+func nonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
+}
+
+func dedupeHitsMaps(items []SearchHit, limit int) []SearchHit {
+	out := make([]SearchHit, 0, limit)
+	seen := map[string]bool{}
+	for _, h := range items {
+		u := strings.TrimSpace(h.URL)
+		if u == "" || seen[u] {
+			continue
+		}
+		seen[u] = true
+		out = append(out, h)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
 }
