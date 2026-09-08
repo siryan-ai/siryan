@@ -68,6 +68,17 @@ func RunResearch(ctx context.Context, req ResearchRequest) (*ResearchResult, err
 
 	blocks, claims, notes, _ := SynthesizeBlocks(req.Query, sources)
 
+	if len(hits) == 0 {
+		return &ResearchResult{
+			Query: req.Query,
+			Notes: "search_empty",
+			Blocks: []map[string]interface{}{
+				{"type": "text", "version": 1, "data": map[string]interface{}{
+					"markdown": "Arama motorundan sonuç gelmedi (bot koruması veya boş SERP). Sorguyu değiştirip tekrar dene.",
+				}},
+			},
+		}, nil
+	}
 	return &ResearchResult{
 		Query:   req.Query,
 		Sources: sources,
