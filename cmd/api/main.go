@@ -24,6 +24,7 @@ func main() {
 	})
 
 	chat := handlers.NewChatHandler()
+	ag := handlers.NewAgentHandler()
 
 	api := r.Group("/api/v1")
 	{
@@ -32,6 +33,7 @@ func main() {
 		api.GET("/auth/me", auth.Me)
 		api.POST("/auth/forgot-password", auth.ForgotPassword)
 		api.POST("/chat", chat.Chat)
+		api.POST("/agent/research", ag.Research)
 	}
 
 	port := cfg.Port
