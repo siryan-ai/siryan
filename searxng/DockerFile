@@ -1,5 +1,5 @@
 FROM docker.io/searxng/searxng:latest
 USER root
-COPY settings.yml searxng/settings.yml
+COPY settings.yml /etc/searxng/settings.yml
 RUN chown -R searxng:searxng /etc/searxng || true
 USER searxng
