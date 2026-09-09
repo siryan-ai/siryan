@@ -1,5 +1,3 @@
-// internal/agent/synthesize.go
-
 package agent
 
 import (
@@ -20,7 +18,7 @@ func SynthesizeBlocks(query string, sources []Source) ([]map[string]interface{},
 				"type":    "text",
 				"version": 1,
 				"data": map[string]interface{}{
-					"markdown": "Kaynak bulunamadı. Sorguyu daraltıp tekrar dene.",
+					"markdown": "Yeterli açık kaynak bulamadım. Soruyu biraz daha netleştirip tekrar denerim.",
 				},
 			},
 		}
@@ -41,29 +39,41 @@ func SynthesizeBlocks(query string, sources []Source) ([]map[string]interface{},
 
 func synthesizeFromSources(query string, sources []Source) []map[string]interface{} {
 	var b strings.Builder
-	b.WriteString("**" + query + "**\n\n")
+	// Önce birleşik kısa anlatım — sadece başlık+link listesi değil
+	n := 0
 	for _, s := range sources {
-		text := strings.TrimSpace(s.Text)
-		if text == "" {
-			text = strings.TrimSpace(s.Snippet)
+		t := strings.TrimSpace(s.Text)
+		if t == "" {
+			t = strings.TrimSpace(s.Snippet)
 		}
-		if text == "" {
+		if t == "" {
 			continue
 		}
-		if len(text) > 320 {
-			text = text[:320] + "…"
+		if len(t) > 280 {
+			t = t[:280] + "…"
 		}
-		title := s.Title
-		if title == "" {
-			title = DomainOf(s.URL)
+		if n == 0 {
+			b.WriteString(t)
+			b.WriteString("\n\n")
+		} else {
+			b.WriteString("- ")
+			b.WriteString(t)
+			b.WriteString("\n")
 		}
-		b.WriteString("### " + title + "\n")
-		b.WriteString(text + "\n\n")
-		b.WriteString("Kaynak: " + s.URL + "\n\n")
+		n++
+		if n >= 4 {
+			break
+		}
+	}
+	if b.Len() == 0 {
+		b.WriteString("Kaynaklara ulaşıldı ama okunabilir özet çıkarılamadı.")
 	}
 
 	items := make([]map[string]interface{}, 0, len(sources))
 	for _, s := range sources {
+		if strings.Contains(strings.ToLower(s.URL), "wikipedia.org") {
+			continue
+		}
 		desc := s.Snippet
 		if desc == "" {
 			desc = s.Text
@@ -76,39 +86,52 @@ func synthesizeFromSources(query string, sources []Source) []map[string]interfac
 		})
 	}
 
-	return []map[string]interface{}{
+	blocks := []map[string]interface{}{
 		{
 			"type":    "text",
 			"version": 1,
 			"data":    map[string]interface{}{"markdown": strings.TrimSpace(b.String())},
 		},
-		{
+	}
+	if len(items) > 0 {
+		blocks = append(blocks, map[string]interface{}{
 			"type":    "cards",
 			"version": 1,
 			"data":    map[string]interface{}{"items": items},
-		},
+		})
 	}
+	return blocks
 }
 
 func synthesizeWithModel(query string, sources []Source) ([]map[string]interface{}, []Claim, string, error) {
 	var b strings.Builder
-	b.WriteString("Sorgu: " + query + "\n\n")
-	b.WriteString("Sadece verilen kaynaklara dayan. Uydurma. Çelişki varsa yaz.\n\n")
+	b.WriteString("Kullanıcı sorusu: " + query + "\n\n")
+	b.WriteString(`Kurallar:
+- Sadece verilen kaynaklara dayan. Uydurma.
+- Önce soruyu CEVAPLA (kimdir → kim olduğunu anlat; nedir → tanımla). Sadece link listesi YASAK.
+- Uzunluk serbest: gerekmeyen tek kelime yazma; karmaşık konuda gerektiği kadar yaz.
+- Kullanıcı doğrulama istemediyse "doğrulayamam / ekran arkasındasın" nutku çekme.
+- Think, draft, İngilizce analiz, "Here's a thinking process" YASAK.
+- Çelişki varsa belirt.
+- İsteğe bağlı 0-3 kısa takip sorusu (followups).
+
+`)
 	for i, s := range sources {
 		body := s.Text
 		if body == "" {
 			body = s.Snippet
 		}
 		b.WriteString(fmt.Sprintf("--- KAYNAK %d ---\nURL: %s\nBaşlık: %s\nMetin: %s\n\n",
-			i+1, s.URL, s.Title, truncate(body, 3500)))
+			i+1, s.URL, s.Title, truncate(body, 2800)))
 	}
-	b.WriteString(`SADECE şu JSON:
+	b.WriteString(`SADECE geçerli JSON (fence yok, think yok):
 {
-  "summary": "markdown kısa özet",
+  "summary": "Türkçe markdown cevap — önce anlatım",
+  "followups": ["opsiyonel soru 1", "opsiyonel soru 2"],
   "claims": [
     { "text": "...", "support_urls": ["https://..."], "conflict_urls": [], "confidence": 0.0 }
   ],
-  "notes": "doğrulama notu"
+  "notes": ""
 }
 `)
 
@@ -117,7 +140,11 @@ func synthesizeWithModel(query string, sources []Source) ([]map[string]interface
 		return nil, nil, "", err
 	}
 
-	clean := strings.TrimSpace(raw)
+	clean := stripModelNoise(raw)
+	if looksLikeLeakedCoT(clean) {
+		return nil, nil, "", fmt.Errorf("cot_leak")
+	}
+
 	if i := strings.Index(clean, "{"); i >= 0 {
 		if j := strings.LastIndex(clean, "}"); j > i {
 			clean = clean[i : j+1]
@@ -125,22 +152,24 @@ func synthesizeWithModel(query string, sources []Source) ([]map[string]interface
 	}
 
 	var parsed struct {
-		Summary string  `json:"summary"`
-		Claims  []Claim `json:"claims"`
-		Notes   string  `json:"notes"`
+		Summary   string   `json:"summary"`
+		Followups []string `json:"followups"`
+		Claims    []Claim  `json:"claims"`
+		Notes     string   `json:"notes"`
 	}
 	if err := json.Unmarshal([]byte(clean), &parsed); err != nil {
 		return nil, nil, "", fmt.Errorf("parse: %w", err)
 	}
-	if strings.TrimSpace(parsed.Summary) == "" {
-		return nil, nil, "", fmt.Errorf("empty summary")
+	summary := strings.TrimSpace(parsed.Summary)
+	if summary == "" || looksLikeLeakedCoT(summary) {
+		return nil, nil, "", fmt.Errorf("bad summary")
 	}
 
 	blocks := []map[string]interface{}{
 		{
 			"type":    "text",
 			"version": 1,
-			"data":    map[string]interface{}{"markdown": parsed.Summary},
+			"data":    map[string]interface{}{"markdown": summary},
 		},
 	}
 
@@ -167,6 +196,9 @@ func synthesizeWithModel(query string, sources []Source) ([]map[string]interface
 
 	items := make([]map[string]interface{}, 0, len(sources))
 	for _, s := range sources {
+		if strings.Contains(strings.ToLower(s.URL), "wikipedia.org") {
+			continue
+		}
 		items = append(items, map[string]interface{}{
 			"title":       nonEmpty(s.Title, DomainOf(s.URL)),
 			"subtitle":    DomainOf(s.URL),
@@ -174,18 +206,39 @@ func synthesizeWithModel(query string, sources []Source) ([]map[string]interface
 			"url":         s.URL,
 		})
 	}
-	blocks = append(blocks, map[string]interface{}{
-		"type":    "cards",
-		"version": 1,
-		"data":    map[string]interface{}{"items": items},
-	})
-
-	if parsed.Notes != "" {
+	if len(items) > 0 {
 		blocks = append(blocks, map[string]interface{}{
-			"type":    "text",
+			"type":    "cards",
 			"version": 1,
-			"data":    map[string]interface{}{"markdown": "_" + parsed.Notes + "_"},
+			"data":    map[string]interface{}{"items": items},
 		})
+	}
+
+	if len(parsed.Followups) > 0 {
+		opts := make([]map[string]interface{}, 0, 3)
+		for i, q := range parsed.Followups {
+			q = strings.TrimSpace(q)
+			if q == "" {
+				continue
+			}
+			opts = append(opts, map[string]interface{}{
+				"id":    fmt.Sprintf("f%d", i),
+				"label": q,
+			})
+			if len(opts) >= 3 {
+				break
+			}
+		}
+		if len(opts) > 0 {
+			blocks = append(blocks, map[string]interface{}{
+				"type":    "question",
+				"version": 1,
+				"data": map[string]interface{}{
+					"prompt":  "Devam?",
+					"options": opts,
+				},
+			})
+		}
 	}
 
 	return blocks, parsed.Claims, parsed.Notes, nil
@@ -200,13 +253,14 @@ func callGroqJSON(userContent string) (string, error) {
 		"model": "qwen/qwen3.6-27b",
 		"messages": []map[string]string{
 			{
-				"role":    "system",
-				"content": "Return ONLY valid JSON. No markdown fences. No <think> tags. No extra text.",
+				"role": "system",
+				"content": `You output ONLY valid JSON. No markdown fences. No <think>. No English chain-of-thought.
+Turkish summary answers the user from sources. Length flexible: as short or long as needed. No unsolicited identity policing.`,
 			},
 			{"role": "user", "content": userContent},
 		},
-		"temperature": 0.2,
-		"max_tokens":  2048,
+		"temperature": 0.25,
+		"max_tokens":  4096,
 	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequest(http.MethodPost, "https://api.groq.com/openai/v1/chat/completions", bytes.NewReader(body))
@@ -216,7 +270,7 @@ func callGroqJSON(userContent string) (string, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: 90 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -237,6 +291,58 @@ func callGroqJSON(userContent string) (string, error) {
 		return "", fmt.Errorf("bad groq body")
 	}
 	return strings.TrimSpace(gr.Choices[0].Message.Content), nil
+}
+
+func stripModelNoise(s string) string {
+	s = strings.TrimSpace(s)
+	// think etiketleri
+	for {
+		i := strings.Index(strings.ToLower(s), "<think")
+		if i < 0 {
+			break
+		}
+		j := strings.Index(strings.ToLower(s[i:]), "</think>")
+		if j < 0 {
+			s = strings.TrimSpace(s[:i])
+			break
+		}
+		s = strings.TrimSpace(s[:i] + s[i+j+len("</think>"):])
+	}
+	return strings.TrimSpace(s)
+}
+
+func looksLikeLeakedCoT(s string) bool {
+	lower := strings.ToLower(s)
+	markers := []string{
+		"here's a thinking process",
+		"thinking process:",
+		"analyze user input",
+		"apply persona",
+		"drafting response",
+		"revised draft",
+		"json output only",
+		"check against rules",
+		"response strategy:",
+		"let me draft",
+		"internal monologue",
+	}
+	hits := 0
+	for _, m := range markers {
+		if strings.Contains(lower, m) {
+			hits++
+		}
+	}
+	if hits >= 1 && len(s) > 400 {
+		return true
+	}
+	if hits >= 2 {
+		return true
+	}
+	// aynı cümle aşırı tekrar
+	if strings.Count(lower, "kim olduğunu doğrulayamam") > 2 {
+		return true
+	}
+	return false
 }
 
 func truncate(s string, n int) string {
