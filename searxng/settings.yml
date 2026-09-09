@@ -1,9 +1,24 @@
 use_default_settings: true
+
+general:
+  instance_name: "siryan-searx"
+  enable_metrics: false
+
 server:
-  secret_key: "buraya-rastgele-uzun-bir-sifre-yaz"
+  secret_key: "buraya-uzun-rastgele-bir-string-yaz"
   limiter: false
   image_proxy: false
+  method: "GET"
+  base_url: "https://siryan-searx.onrender.com"
+
 search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "auto"
   formats:
     - html
     - json
+
+outgoing:
+  request_timeout: 8.0
+  max_request_timeout: 12.0
