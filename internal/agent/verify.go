@@ -37,19 +37,18 @@ func FilterRelevant(userMessage string, sources []Source) []Source {
 	}
 
 	if len(ranked) == 0 {
-		// tamamen boş kalmasın; wiki hariç ilk birkaçını al
 		var fb []Source
 		for _, s := range sources {
 			if strings.Contains(strings.ToLower(s.URL), "wikipedia.org") {
 				continue
 			}
 			fb = append(fb, s)
-			if len(fb) >= 4 {
+			if len(fb) >= 3 {
 				break
 			}
 		}
 		if len(fb) == 0 {
-			return sources
+			return nil
 		}
 		return fb
 	}
@@ -57,7 +56,6 @@ func FilterRelevant(userMessage string, sources []Source) []Source {
 	sort.Slice(ranked, func(i, j int) bool {
 		return ranked[i].score > ranked[j].score
 	})
-
 	out := make([]Source, 0, 4)
 	for _, r := range ranked {
 		out = append(out, r.src)
@@ -77,7 +75,6 @@ func tokenize(s string) []string {
 		"ve": true, "ile": true, "bir": true, "bu": true, "şu": true,
 		"icin": true, "için": true, "nedir": true, "kimdir": true,
 		"ne": true, "mi": true, "mı": true, "mu": true, "mü": true,
-		"the": true, "a": true, "an": true, "of": true,
 	}
 	var out []string
 	for _, p := range parts {

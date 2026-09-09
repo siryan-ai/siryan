@@ -13,14 +13,16 @@ import (
 
 type SearchPlan struct {
 	Queries []string `json:"queries"`
-	Intent  string   `json:"intent"` // product_search | fact | place | news | general
+	Intent  string   `json:"intent"`
 }
 
 func PlanQueries(userMessage string) SearchPlan {
 	if plan, err := planWithModel(userMessage); err == nil && len(plan.Queries) > 0 {
+		if len(plan.Queries) > 3 {
+			plan.Queries = plan.Queries[:3]
+		}
 		return plan
 	}
-	// Fallback: basit sorgular — ham metni tek başına kullanma
 	return heuristicPlan(userMessage)
 }
 
@@ -28,31 +30,26 @@ func heuristicPlan(msg string) SearchPlan {
 	msg = strings.TrimSpace(msg)
 	lower := strings.ToLower(msg)
 	intent := "general"
-	if strings.Contains(lower, "trendyol") || strings.Contains(lower, "kulaklık") ||
-		strings.Contains(lower, "fiyat") || strings.Contains(lower, "puan") {
+	if strings.Contains(lower, "trendyol") || strings.Contains(lower, "fiyat") ||
+		strings.Contains(lower, "puan") || strings.Contains(lower, "kulaklık") {
 		intent = "product_search"
 	}
-	if strings.Contains(lower, "nerede") || strings.Contains(lower, "konum") {
+	if strings.Contains(lower, "nerede") || strings.Contains(lower, "konum") ||
+		strings.Contains(lower, "harita") {
 		intent = "place"
 	}
 
 	var qs []string
 	switch intent {
 	case "product_search":
-		qs = []string{
-			msg,
-			msg + " site:trendyol.com",
-			msg + " inceleme",
-			msg + " karşılaştırma",
-		}
+		qs = []string{msg, msg + " site:trendyol.com", msg + " inceleme"}
 	case "place":
-		qs = []string{msg, msg + " konum", msg + " harita"}
+		qs = []string{msg + " konum", msg + " adresi"}
 	default:
-		qs = []string{msg, msg + " nedir", msg + " resmi"}
+		qs = []string{msg, msg + " nedir"}
 	}
-	// max 4
-	if len(qs) > 4 {
-		qs = qs[:4]
+	if len(qs) > 3 {
+		qs = qs[:3]
 	}
 	return SearchPlan{Queries: qs, Intent: intent}
 }
@@ -62,11 +59,9 @@ func planWithModel(userMessage string) (SearchPlan, error) {
 	if key == "" {
 		return SearchPlan{}, fmt.Errorf("no key")
 	}
-	sys := `Kullanıcı isteğini karşılamak için 2-5 KISA arama sorgusu üret.
-Ham kullanıcı cümlesini olduğu gibi TEK sorgu yapma.
-Ürün isteğinde: marka/kategori, fiyat filtresi, puan, site odaklı ayrı sorgular.
-JSON only:
-{"intent":"product_search|fact|place|news|general","queries":["q1","q2"]}`
+	sys := `Kullanıcı isteği için 2 veya 3 KISA arama sorgusu üret.
+Ham cümleyi tek sorgu yapma. Ürün/fiyat/konum için odaklı sorgular.
+JSON only: {"intent":"product_search|fact|place|news|general","queries":["q1","q2"]}`
 
 	payload := map[string]interface{}{
 		"model": "qwen/qwen3.6-27b",
@@ -75,13 +70,13 @@ JSON only:
 			{"role": "user", "content": userMessage},
 		},
 		"temperature": 0.2,
-		"max_tokens":  300,
+		"max_tokens":  200,
 	}
 	body, _ := json.Marshal(payload)
 	req, _ := http.NewRequest(http.MethodPost, "https://api.groq.com/openai/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := &http.Client{Timeout: 12 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return SearchPlan{}, err
@@ -114,8 +109,8 @@ JSON only:
 	if len(plan.Queries) == 0 {
 		return SearchPlan{}, fmt.Errorf("no queries")
 	}
-	if len(plan.Queries) > 5 {
-		plan.Queries = plan.Queries[:5]
+	if len(plan.Queries) > 3 {
+		plan.Queries = plan.Queries[:3]
 	}
 	return plan, nil
 }

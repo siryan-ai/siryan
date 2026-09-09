@@ -18,7 +18,7 @@ func searchSearx(ctx context.Context, query string, limit int) ([]SearchHit, err
 		return nil, fmt.Errorf("SEARXNG_URL empty")
 	}
 	if limit <= 0 {
-		limit = 8
+		limit = 5
 	}
 	u := fmt.Sprintf("%s/search?q=%s&format=json&categories=general",
 		base, url.QueryEscape(query))
@@ -30,7 +30,7 @@ func searchSearx(ctx context.Context, query string, limit int) ([]SearchHit, err
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "SiryanAgent/1.0")
 
-	client := &http.Client{Timeout: 18 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

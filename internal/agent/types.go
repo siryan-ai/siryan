@@ -37,10 +37,9 @@ type RunResult struct {
 	Claims    []Claim
 	Notes     string
 	Content   string
-	Steps     []string `json:"steps,omitempty"` // UI progress ipucu
+	Steps     []string `json:"steps,omitempty"`
 }
 
-// Eski handler uyumu
 type ResearchRequest struct {
 	Query   string `json:"query"`
 	Locale  string `json:"locale"`

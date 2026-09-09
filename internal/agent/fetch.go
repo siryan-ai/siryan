@@ -2,11 +2,9 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -29,81 +27,105 @@ func chromeAllocator(parent context.Context) (context.Context, context.CancelFun
 }
 
 func FetchPage(parent context.Context, rawURL string) (title, text string, err error) {
-	// Wikipedia → REST API (stabil, hızlı)
-	if t, tx, ok := fetchWikipediaAPI(parent, rawURL); ok {
+	// Önce hızlı HTTP (Chrome'dan çok daha hızlı)
+	if t, tx, ok := fetchHTTPFast(parent, rawURL); ok {
 		return t, tx, nil
 	}
 	return fetchWithChrome(parent, rawURL)
 }
 
-func fetchWikipediaAPI(parent context.Context, rawURL string) (title, text string, ok bool) {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "", "", false
-	}
-	host := strings.ToLower(u.Host)
-	if !strings.Contains(host, "wikipedia.org") {
-		return "", "", false
-	}
-	// /wiki/Title
-	path := strings.TrimPrefix(u.Path, "/wiki/")
-	if path == "" || path == u.Path {
-		return "", "", false
-	}
-	page, _ := url.PathUnescape(path)
-	lang := "en"
-	if strings.HasPrefix(host, "tr.") {
-		lang = "tr"
-	} else if i := strings.Index(host, "."); i > 0 {
-		// xx.wikipedia.org
-		lang = host[:i]
-	}
-
-	api := fmt.Sprintf(
-		"https://%s.wikipedia.org/api/rest_v1/page/summary/%s",
-		lang, url.PathEscape(page),
-	)
-	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+func fetchHTTPFast(parent context.Context, rawURL string) (title, text string, ok bool) {
+	ctx, cancel := context.WithTimeout(parent, 8*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, api, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", "", false
 	}
-	req.Header.Set("User-Agent", "SiryanResearch/1.0 (siryan-ai)")
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; SiryanResearch/1.0)")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", false
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
 		return "", "", false
 	}
-
-	var parsed struct {
-		Title       string `json:"title"`
-		Extract     string `json:"extract"`
-		Description string `json:"description"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 500_000))
+	if err != nil || len(body) < 80 {
 		return "", "", false
 	}
-	if parsed.Extract == "" {
+	html := string(body)
+	title = extractHTMLTitle(html)
+	text = stripHTMLToText(html)
+	text = CleanPageText(compactText(text, 8000))
+	if len(text) < 40 {
 		return "", "", false
-	}
-	title = parsed.Title
-	text = parsed.Extract
-	if parsed.Description != "" {
-		text = parsed.Description + ". " + text
 	}
 	return title, text, true
 }
 
+func extractHTMLTitle(html string) string {
+	low := strings.ToLower(html)
+	i := strings.Index(low, "<title")
+	if i < 0 {
+		return ""
+	}
+	i = strings.Index(html[i:], ">")
+	if i < 0 {
+		return ""
+	}
+	start := strings.Index(low, "<title")
+	start = start + i + 1
+	end := strings.Index(low[start:], "</title>")
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(stripTagsSimple(html[start : start+end]))
+}
+
+func stripHTMLToText(html string) string {
+	// script/style at
+	low := html
+	for _, tag := range []string{"script", "style", "noscript"} {
+		for {
+			open := strings.Index(strings.ToLower(low), "<"+tag)
+			if open < 0 {
+				break
+			}
+			close := strings.Index(strings.ToLower(low[open:]), "</"+tag+">")
+			if close < 0 {
+				low = low[:open]
+				break
+			}
+			low = low[:open] + low[open+close+len(tag)+3:]
+		}
+	}
+	return stripTagsSimple(low)
+}
+
+func stripTagsSimple(s string) string {
+	var b strings.Builder
+	in := false
+	for _, r := range s {
+		switch {
+		case r == '<':
+			in = true
+		case r == '>':
+			in = false
+			b.WriteByte(' ')
+		case !in:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func fetchWithChrome(parent context.Context, rawURL string) (title, text string, err error) {
-	ctx, cancel := context.WithTimeout(parent, 25*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 12*time.Second)
 	defer cancel()
 
 	allocCtx, allocCancel := chromeAllocator(ctx)
@@ -116,15 +138,17 @@ func fetchWithChrome(parent context.Context, rawURL string) (title, text string,
 	err = chromedp.Run(taskCtx,
 		chromedp.Navigate(rawURL),
 		chromedp.WaitReady("body", chromedp.ByQuery),
-		chromedp.Sleep(800*time.Millisecond),
+		chromedp.Sleep(400*time.Millisecond),
 		chromedp.Title(&title),
 		chromedp.Evaluate(`document.body ? document.body.innerText : ''`, &body),
 	)
 	if err != nil {
 		return "", "", err
 	}
-	text = compactText(body, 12000)
-	text = CleanPageText(text)
+	text = CleanPageText(compactText(body, 8000))
+	if text == "" {
+		return title, text, fmt.Errorf("empty body")
+	}
 	return title, text, nil
 }
 

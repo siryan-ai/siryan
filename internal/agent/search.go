@@ -6,6 +6,9 @@ import (
 )
 
 func SearchMulti(ctx context.Context, queries []string, perQuery int) []SearchHit {
+	if perQuery <= 0 {
+		perQuery = 4
+	}
 	var all []SearchHit
 	for _, q := range queries {
 		q = strings.TrimSpace(q)
@@ -15,11 +18,10 @@ func SearchMulti(ctx context.Context, queries []string, perQuery int) []SearchHi
 		hits := searchOneQuery(ctx, q, perQuery)
 		all = append(all, hits...)
 	}
-	return dedupeHits(all, 12)
+	return dedupeHits(all, 8)
 }
 
 func searchOneQuery(ctx context.Context, query string, limit int) []SearchHit {
-	// Sadece SearX — hata yutulur, UI'ya gitmez
 	if hits, err := searchSearx(ctx, query, limit); err == nil && len(hits) > 0 {
 		return filterOutWiki(hits)
 	}

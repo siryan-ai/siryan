@@ -9,7 +9,7 @@ import (
 
 func Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	if req.MaxURLs <= 0 {
-		req.MaxURLs = 6
+		req.MaxURLs = 4
 	}
 	if req.Locale == "" {
 		req.Locale = "tr"
@@ -17,7 +17,6 @@ func Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 
 	steps := []string{"İstek analiz ediliyor"}
 
-	// Layer C stub — döngüsel import yok
 	if blocks, srcs, ok := tryPartnersLocal(req.UserMessage); ok {
 		return &RunResult{
 			UsedAgent: true,
@@ -25,29 +24,28 @@ func Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			Sources:   srcs,
 			Content:   firstMarkdown(blocks),
 			Notes:     "partner",
-			Steps:     []string{"Partner verisi kullanıldı"},
+			Steps:     []string{"Partner verisi"},
 		}, nil
 	}
 
-	steps = append(steps, "Arama planı oluşturuluyor")
+	steps = append(steps, "Arama planı")
 	plan := PlanQueries(req.UserMessage)
 
-	steps = append(steps, fmt.Sprintf("%d sorgu ile aranıyor", len(plan.Queries)))
-	hits := SearchMulti(ctx, plan.Queries, 6)
-	hits = filterOutWiki(hits)
+	steps = append(steps, fmt.Sprintf("%d sorgu", len(plan.Queries)))
+	hits := SearchMulti(ctx, plan.Queries, 4)
 
 	steps = append(steps, "Sayfalar okunuyor")
 	sources := fetchAll(ctx, hits, plan, req.MaxURLs)
 	sources = FilterRelevant(req.UserMessage, sources)
 
-	steps = append(steps, "Sonuçlar doğrulanıyor ve derleniyor")
+	steps = append(steps, "Derleniyor")
 	blocks, claims, notes, _ := SynthesizeBlocks(req.UserMessage, sources)
 	if len(blocks) == 0 {
 		blocks = []map[string]interface{}{
 			{
 				"type": "text", "version": 1,
 				"data": map[string]interface{}{
-					"markdown": "Şu an yeterli açık kaynak bulamadım. Soruyu biraz daha netleştirip tekrar denerim.",
+					"markdown": "Şu an yeterli açık kaynak derleyemedim. Soruyu netleştirip tekrar dene.",
 				},
 			},
 		}
@@ -81,7 +79,7 @@ func fetchAll(ctx context.Context, hits []SearchHit, plan SearchPlan, max int) [
 		mu  sync.Mutex
 		wg  sync.WaitGroup
 		out []Source
-		sem = make(chan struct{}, 3)
+		sem = make(chan struct{}, 2)
 	)
 	for i := 0; i < max; i++ {
 		h := hits[i]
@@ -113,6 +111,7 @@ func appendSourceList(blocks []map[string]interface{}, sources []Source) []map[s
 	}
 	var b strings.Builder
 	b.WriteString("**Kaynaklar**\n")
+	n := 0
 	for _, s := range sources {
 		if strings.Contains(strings.ToLower(s.URL), "wikipedia.org") {
 			continue
@@ -122,14 +121,14 @@ func appendSourceList(blocks []map[string]interface{}, sources []Source) []map[s
 			t = DomainOf(s.URL)
 		}
 		b.WriteString("- [" + t + "](" + s.URL + ")\n")
+		n++
 	}
-	md := strings.TrimSpace(b.String())
-	if md == "**Kaynaklar**" {
+	if n == 0 {
 		return blocks
 	}
 	return append(blocks, map[string]interface{}{
 		"type": "text", "version": 1,
-		"data": map[string]interface{}{"markdown": md},
+		"data": map[string]interface{}{"markdown": strings.TrimSpace(b.String())},
 	})
 }
 
@@ -146,20 +145,18 @@ func firstMarkdown(blocks []map[string]interface{}) string {
 	return "Tamam."
 }
 
-// Eski endpoint uyumu
 func RunResearch(ctx context.Context, req ResearchRequest) (*ResearchResult, error) {
 	res, err := Run(ctx, RunRequest{
 		UserMessage: req.Query,
 		Locale:      req.Locale,
 		MaxURLs:     req.MaxURLs,
 	})
-	if err != nil {
-		// UI'ya teknik hata yok
+	if err != nil || res == nil {
 		return &ResearchResult{
 			Query: req.Query,
 			Blocks: []map[string]interface{}{
 				{"type": "text", "version": 1, "data": map[string]interface{}{
-					"markdown": "Şu an net sonuç derleyemedim. Biraz sonra tekrar denerim.",
+					"markdown": "Şu an net sonuç derleyemedim.",
 				}},
 			},
 			Notes: "silent_fail",
