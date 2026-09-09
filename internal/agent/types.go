@@ -1,19 +1,26 @@
-// internal/agent/types.go
-
 package agent
 
-type ResearchRequest struct {
-	Query   string `json:"query"`
-	Locale  string `json:"locale"`
-	MaxURLs int    `json:"max_urls"`
+type RunRequest struct {
+	UserMessage string
+	Locale      string
+	MaxURLs     int
+	UserID      string // Layer A — sonra
+}
+
+type SearchHit struct {
+	URL     string
+	Title   string
+	Snippet string
 }
 
 type Source struct {
-	URL     string  `json:"url"`
-	Title   string  `json:"title"`
-	Snippet string  `json:"snippet"`
-	Text    string  `json:"text"`
-	Score   float64 `json:"score"`
+	URL       string  `json:"url"`
+	Title     string  `json:"title"`
+	Snippet   string  `json:"snippet"`
+	Text      string  `json:"text"`
+	Score     float64 `json:"score"`
+	QueryUsed string  `json:"query_used"`
+	Relevant  bool    `json:"relevant"`
 }
 
 type Claim struct {
@@ -23,10 +30,11 @@ type Claim struct {
 	Confidence float64  `json:"confidence"`
 }
 
-type ResearchResult struct {
-	Query   string                   `json:"query"`
-	Sources []Source                 `json:"sources"`
-	Claims  []Claim                  `json:"claims"`
-	Blocks  []map[string]interface{} `json:"blocks"`
-	Notes   string                   `json:"notes"`
+type RunResult struct {
+	UsedAgent bool
+	Blocks    []map[string]interface{}
+	Sources   []Source
+	Claims    []Claim
+	Notes     string // sadece log / debug — UI'ya gösterme zorunlu değil
+	Content   string
 }
