@@ -21,9 +21,26 @@ func RunResearch(ctx context.Context, req ResearchRequest) (*ResearchResult, err
 			Query: req.Query,
 			Notes: "search_failed: " + err.Error(),
 			Blocks: []map[string]interface{}{
-				{"type": "text", "version": 1, "data": map[string]interface{}{
-					"markdown": "Arama yapılamadı. " + err.Error(),
-				}},
+				{
+					"type": "text", "version": 1,
+					"data": map[string]interface{}{
+						"markdown": "Arama başarısız: " + err.Error(),
+					},
+				},
+			},
+		}, nil
+	}
+	if len(hits) == 0 {
+		return &ResearchResult{
+			Query: req.Query,
+			Notes: "search_empty",
+			Blocks: []map[string]interface{}{
+				{
+					"type": "text", "version": 1,
+					"data": map[string]interface{}{
+						"markdown": "Arama sonucu yok.",
+					},
+				},
 			},
 		}, nil
 	}
@@ -68,17 +85,6 @@ func RunResearch(ctx context.Context, req ResearchRequest) (*ResearchResult, err
 
 	blocks, claims, notes, _ := SynthesizeBlocks(req.Query, sources)
 
-	if len(hits) == 0 {
-		return &ResearchResult{
-			Query: req.Query,
-			Notes: "search_empty",
-			Blocks: []map[string]interface{}{
-				{"type": "text", "version": 1, "data": map[string]interface{}{
-					"markdown": "Arama motorundan sonuç gelmedi (bot koruması veya boş SERP). Sorguyu değiştirip tekrar dene.",
-				}},
-			},
-		}, nil
-	}
 	return &ResearchResult{
 		Query:   req.Query,
 		Sources: sources,
