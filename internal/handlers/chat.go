@@ -1,5 +1,3 @@
-// internal/handlers/chat.go
-
 package handlers
 
 import (
@@ -8,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -23,7 +20,7 @@ type ChatHandler struct {
 
 func NewChatHandler() *ChatHandler {
 	return &ChatHandler{
-		client: &http.Client{Timeout: 60 * time.Second},
+		client: &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
@@ -35,51 +32,7 @@ type chatMessage struct {
 type chatRequest struct {
 	Messages []chatMessage `json:"messages" binding:"required"`
 	Model    string        `json:"model"`
-	Mode     string        `json:"mode"` // empathy | critical
-}
-
-func looksLikeResearch(msgs []chatMessage) (string, bool) {
-	if len(msgs) == 0 {
-		return "", false
-	}
-	q := strings.ToLower(strings.TrimSpace(msgs[len(msgs)-1].Content))
-	if q == "" {
-		return "", false
-	}
-	keys := []string{
-		"araştır",
-		"arastir",
-		"research",
-		"güncel",
-		"guncel",
-		"webde",
-		"internetten",
-		"kaynak bul",
-		"doğrula",
-		"dogrula",
-		"son durum",
-		"haberler",
-		"haber ",
-	}
-	for _, k := range keys {
-		if strings.Contains(q, k) {
-			return msgs[len(msgs)-1].Content, true
-		}
-	}
-	return "", false
-}
-
-func firstTextFromBlocks(blocks []map[string]interface{}) string {
-	for _, b := range blocks {
-		if b["type"] == "text" {
-			if data, ok := b["data"].(map[string]interface{}); ok {
-				if md, ok := data["markdown"].(string); ok {
-					return md
-				}
-			}
-		}
-	}
-	return "Araştırma tamamlandı"
+	Mode     string        `json:"mode"`
 }
 
 func (h *ChatHandler) Chat(c *gin.Context) {
@@ -98,28 +51,29 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		mode = "critical"
 	}
 
-	// Research agent köprüsü
-	if query, ok := looksLikeResearch(req.Messages); ok {
-		result, err := agent.RunResearch(c.Request.Context(), agent.ResearchRequest{
-			Query:   query,
-			Locale:  "tr",
-			MaxURLs: 4,
+	last := req.Messages[len(req.Messages)-1].Content
+
+	// "araştır" şart değil
+	if agent.NeedsExternalData(last) {
+		result, err := agent.Run(c.Request.Context(), agent.RunRequest{
+			UserMessage: last,
+			Locale:      "tr",
+			MaxURLs:     6,
 		})
-		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		if err == nil && result != nil && len(result.Blocks) > 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"id":       "agent",
+				"model":    "siryan-agent",
+				"mode":     mode,
+				"content":  result.Content,
+				"thinking": "",
+				"blocks":   result.Blocks,
+				"sources":  result.Sources,
+				"steps":    result.Steps,
+			})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"id":       "research",
-			"model":    "agent-research",
-			"mode":     mode,
-			"content":  firstTextFromBlocks(result.Blocks),
-			"thinking": "",
-			"blocks":   result.Blocks,
-			"sources":  result.Sources,
-			"notes":    result.Notes,
-		})
-		return
+		// fail → normal chat'e düş, hata basma
 	}
 
 	model := req.Model
@@ -131,7 +85,6 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	messages := []chatMessage{{Role: "system", Content: system}}
 	messages = append(messages, req.Messages...)
 
-	// Temperature değerini standart if/else bloğu ile belirliyoruz
 	temperature := 0.4
 	if mode == "empathy" {
 		temperature = 0.6
@@ -166,11 +119,9 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 			time.Sleep(400 * time.Millisecond)
 			continue
 		}
-
 		respBody, _ = io.ReadAll(resp.Body)
 		status = resp.StatusCode
 		resp.Body.Close()
-
 		if status == 429 || status >= 500 {
 			time.Sleep(500 * time.Millisecond)
 			continue
@@ -183,10 +134,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		return
 	}
 	if status != http.StatusOK {
-		c.JSON(http.StatusBadGateway, gin.H{
-			"error":  "model hatası",
-			"status": status,
-		})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "model hatası", "status": status})
 		return
 	}
 
@@ -212,9 +160,8 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		content = "Cevap alınamadı"
 		if len(blocks) == 0 {
 			blocks = []chatutil.Block{{
-				Type:    "text",
-				Version: 1,
-				Data:    map[string]interface{}{"markdown": content},
+				Type: "text", Version: 1,
+				Data: map[string]interface{}{"markdown": content},
 			}}
 		}
 	}

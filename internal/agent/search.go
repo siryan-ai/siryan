@@ -5,7 +5,6 @@ import (
 	"strings"
 )
 
-// SearchMulti: plan sorgularını çalıştır, birleştir. Hata UI'ye gitmez.
 func SearchMulti(ctx context.Context, queries []string, perQuery int) []SearchHit {
 	var all []SearchHit
 	for _, q := range queries {
@@ -20,26 +19,41 @@ func SearchMulti(ctx context.Context, queries []string, perQuery int) []SearchHi
 }
 
 func searchOneQuery(ctx context.Context, query string, limit int) []SearchHit {
-	// 1 SearX
+	// Sadece SearX — hata yutulur, UI'ya gitmez
 	if hits, err := searchSearx(ctx, query, limit); err == nil && len(hits) > 0 {
-		return hits
-	}
-	// 2 DDG HTML / Bing / Instant — mevcut fonksiyonların varsa çağır
-	if hits, err := searchDDGHTML(ctx, query, limit); err == nil && len(hits) > 0 {
-		return hits
-	}
-	if hits, err := searchBingHTML(ctx, query, limit); err == nil && len(hits) > 0 {
-		return hits
-	}
-	if hits, err := searchDDGInstant(ctx, query, limit); err == nil && len(hits) > 0 {
-		return hits
-	}
-	// 3 wiki yedek
-	if hits, err := searchWikipedia(ctx, "tr", query, 2); err == nil && len(hits) > 0 {
-		return hits
-	}
-	if hits, err := searchWikipedia(ctx, "en", query, 2); err == nil {
-		return hits
+		return filterOutWiki(hits)
 	}
 	return nil
+}
+
+func filterOutWiki(hits []SearchHit) []SearchHit {
+	out := make([]SearchHit, 0, len(hits))
+	for _, h := range hits {
+		u := strings.ToLower(h.URL)
+		if strings.Contains(u, "wikipedia.org") || strings.Contains(u, "wikimedia.org") {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+func dedupeHits(items []SearchHit, limit int) []SearchHit {
+	out := make([]SearchHit, 0, limit)
+	seen := map[string]bool{}
+	for _, h := range items {
+		u := strings.TrimSpace(h.URL)
+		if u == "" || seen[u] {
+			continue
+		}
+		if strings.Contains(strings.ToLower(u), "wikipedia.org") {
+			continue
+		}
+		seen[u] = true
+		out = append(out, h)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
 }

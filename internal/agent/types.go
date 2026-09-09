@@ -4,7 +4,7 @@ type RunRequest struct {
 	UserMessage string
 	Locale      string
 	MaxURLs     int
-	UserID      string // Layer A — sonra
+	UserID      string
 }
 
 type SearchHit struct {
@@ -35,6 +35,22 @@ type RunResult struct {
 	Blocks    []map[string]interface{}
 	Sources   []Source
 	Claims    []Claim
-	Notes     string // sadece log / debug — UI'ya gösterme zorunlu değil
+	Notes     string
 	Content   string
+	Steps     []string `json:"steps,omitempty"` // UI progress ipucu
+}
+
+// Eski handler uyumu
+type ResearchRequest struct {
+	Query   string `json:"query"`
+	Locale  string `json:"locale"`
+	MaxURLs int    `json:"max_urls"`
+}
+
+type ResearchResult struct {
+	Query   string                   `json:"query"`
+	Sources []Source                 `json:"sources"`
+	Claims  []Claim                  `json:"claims"`
+	Blocks  []map[string]interface{} `json:"blocks"`
+	Notes   string                   `json:"notes"`
 }
