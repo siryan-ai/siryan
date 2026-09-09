@@ -27,29 +27,101 @@ func SynthesizeBlocks(query string, sources []Source) ([]map[string]interface{},
 		return blocks, nil, "no_sources", nil
 	}
 
+	blocks, claims, notes, err := synthesizeWithModel(query, sources)
+	if err == nil && len(blocks) > 0 {
+		return blocks, claims, notes, nil
+	}
+
+	note := "source_summary"
+	if err != nil {
+		note = "source_summary | " + err.Error()
+	}
+	return synthesizeFromSources(query, sources), nil, note, nil
+}
+
+func synthesizeFromSources(query string, sources []Source) []map[string]interface{} {
+	var b strings.Builder
+	b.WriteString("**" + query + "**\n\n")
+	for _, s := range sources {
+		text := strings.TrimSpace(s.Text)
+		if text == "" {
+			text = strings.TrimSpace(s.Snippet)
+		}
+		if text == "" {
+			continue
+		}
+		if len(text) > 320 {
+			text = text[:320] + "…"
+		}
+		title := s.Title
+		if title == "" {
+			title = DomainOf(s.URL)
+		}
+		b.WriteString("### " + title + "\n")
+		b.WriteString(text + "\n\n")
+		b.WriteString("Kaynak: " + s.URL + "\n\n")
+	}
+
+	items := make([]map[string]interface{}, 0, len(sources))
+	for _, s := range sources {
+		desc := s.Snippet
+		if desc == "" {
+			desc = s.Text
+		}
+		items = append(items, map[string]interface{}{
+			"title":       nonEmpty(s.Title, DomainOf(s.URL)),
+			"subtitle":    DomainOf(s.URL),
+			"description": trimSnippet(desc, 160),
+			"url":         s.URL,
+		})
+	}
+
+	return []map[string]interface{}{
+		{
+			"type":    "text",
+			"version": 1,
+			"data":    map[string]interface{}{"markdown": strings.TrimSpace(b.String())},
+		},
+		{
+			"type":    "cards",
+			"version": 1,
+			"data":    map[string]interface{}{"items": items},
+		},
+	}
+}
+
+func synthesizeWithModel(query string, sources []Source) ([]map[string]interface{}, []Claim, string, error) {
 	var b strings.Builder
 	b.WriteString("Sorgu: " + query + "\n\n")
-	b.WriteString("Aşağıdaki kaynaklara DAYALI özet çıkar. Kaynakta yoksa uydurma.\n")
-	b.WriteString("Çelişki varsa açık yaz. Güncel değilse belirt.\n\n")
+	b.WriteString("Sadece verilen kaynaklara dayan. Uydurma. Çelişki varsa yaz.\n\n")
 	for i, s := range sources {
+		body := s.Text
+		if body == "" {
+			body = s.Snippet
+		}
 		b.WriteString(fmt.Sprintf("--- KAYNAK %d ---\nURL: %s\nBaşlık: %s\nMetin: %s\n\n",
-			i+1, s.URL, s.Title, truncate(s.Text, 3500)))
+			i+1, s.URL, s.Title, truncate(body, 3500)))
 	}
-	b.WriteString(`SADECE şu JSON'u döndür:
+	b.WriteString(`SADECE şu JSON:
 {
-  "summary": "kısa markdown özet",
+  "summary": "markdown kısa özet",
   "claims": [
     { "text": "...", "support_urls": ["https://..."], "conflict_urls": [], "confidence": 0.0 }
   ],
   "notes": "doğrulama notu"
 }
-confidence 0-1. support_urls sadece verilen kaynaklardan.
 `)
 
 	raw, err := callGroqJSON(b.String())
 	if err != nil {
-		// model yoksa kaba özet
-		return fallbackBlocks(query, sources), nil, "model_fallback", nil
+		return nil, nil, "", err
+	}
+
+	clean := strings.TrimSpace(raw)
+	if i := strings.Index(clean, "{"); i >= 0 {
+		if j := strings.LastIndex(clean, "}"); j > i {
+			clean = clean[i : j+1]
+		}
 	}
 
 	var parsed struct {
@@ -57,20 +129,21 @@ confidence 0-1. support_urls sadece verilen kaynaklardan.
 		Claims  []Claim `json:"claims"`
 		Notes   string  `json:"notes"`
 	}
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return fallbackBlocks(query, sources), nil, "parse_fallback", nil
+	if err := json.Unmarshal([]byte(clean), &parsed); err != nil {
+		return nil, nil, "", fmt.Errorf("parse: %w", err)
+	}
+	if strings.TrimSpace(parsed.Summary) == "" {
+		return nil, nil, "", fmt.Errorf("empty summary")
 	}
 
-	blocks := []map[string]interface{}{}
-	if parsed.Summary != "" {
-		blocks = append(blocks, map[string]interface{}{
+	blocks := []map[string]interface{}{
+		{
 			"type":    "text",
 			"version": 1,
 			"data":    map[string]interface{}{"markdown": parsed.Summary},
-		})
+		},
 	}
 
-	// claims table
 	if len(parsed.Claims) > 0 {
 		cols := []string{"İddia", "Güven", "Kaynaklar"}
 		rows := [][]string{}
@@ -92,13 +165,12 @@ confidence 0-1. support_urls sadece verilen kaynaklardan.
 		})
 	}
 
-	// source cards
-	items := []map[string]interface{}{}
+	items := make([]map[string]interface{}, 0, len(sources))
 	for _, s := range sources {
 		items = append(items, map[string]interface{}{
-			"title":       s.Title,
+			"title":       nonEmpty(s.Title, DomainOf(s.URL)),
 			"subtitle":    DomainOf(s.URL),
-			"description": s.Snippet,
+			"description": trimSnippet(nonEmpty(s.Snippet, s.Text), 160),
 			"url":         s.URL,
 		})
 	}
@@ -119,31 +191,6 @@ confidence 0-1. support_urls sadece verilen kaynaklardan.
 	return blocks, parsed.Claims, parsed.Notes, nil
 }
 
-func fallbackBlocks(query string, sources []Source) []map[string]interface{} {
-	var lines []string
-	lines = append(lines, "**Araştırma:** "+query)
-	for _, s := range sources {
-		lines = append(lines, fmt.Sprintf("- [%s](%s): %s", s.Title, s.URL, s.Snippet))
-	}
-	items := []map[string]interface{}{}
-	for _, s := range sources {
-		items = append(items, map[string]interface{}{
-			"title": s.Title, "url": s.URL, "description": s.Snippet,
-		})
-	}
-	return []map[string]interface{}{
-		{"type": "text", "version": 1, "data": map[string]interface{}{"markdown": strings.Join(lines, "\n")}},
-		{"type": "cards", "version": 1, "data": map[string]interface{}{"items": items}},
-	}
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
-}
-
 func callGroqJSON(userContent string) (string, error) {
 	key := os.Getenv("GROQ_API_KEY")
 	if key == "" {
@@ -152,7 +199,10 @@ func callGroqJSON(userContent string) (string, error) {
 	payload := map[string]interface{}{
 		"model": "qwen/qwen3.6-27b",
 		"messages": []map[string]string{
-			{"role": "system", "content": "Kaynaklara bağlı kal. JSON dışında bir şey yazma."},
+			{
+				"role":    "system",
+				"content": "Return ONLY valid JSON. No markdown fences. No <think> tags. No extra text.",
+			},
 			{"role": "user", "content": userContent},
 		},
 		"temperature": 0.2,
@@ -174,7 +224,7 @@ func callGroqJSON(userContent string) (string, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("groq %d", resp.StatusCode)
+		return "", fmt.Errorf("groq %d: %s", resp.StatusCode, truncate(string(raw), 180))
 	}
 	var gr struct {
 		Choices []struct {
@@ -186,12 +236,27 @@ func callGroqJSON(userContent string) (string, error) {
 	if err := json.Unmarshal(raw, &gr); err != nil || len(gr.Choices) == 0 {
 		return "", fmt.Errorf("bad groq body")
 	}
-	content := strings.TrimSpace(gr.Choices[0].Message.Content)
-	// json extract
-	if i := strings.Index(content, "{"); i >= 0 {
-		if j := strings.LastIndex(content, "}"); j > i {
-			content = content[i : j+1]
-		}
+	return strings.TrimSpace(gr.Choices[0].Message.Content), nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return content, nil
+	return s[:n]
+}
+
+func trimSnippet(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
+}
+
+func nonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
 }

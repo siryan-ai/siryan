@@ -1,4 +1,5 @@
 // internal/agent/search.go
+// Öncelik: geniş web (Brave → DDG HTML → Bing HTML → DDG Instant) ; Wikipedia sadece ek kaynak
 
 package agent
 
@@ -43,7 +44,7 @@ func SearchWeb(ctx context.Context, query string, limit int) ([]SearchHit, error
 	var all []SearchHit
 	var errs []string
 
-	// 1) Brave (opsiyonel)
+	// 1) Brave — gerçek web araması (key varsa)
 	if key := strings.TrimSpace(os.Getenv("BRAVE_API_KEY")); key != "" {
 		hits, err := searchBrave(ctx, query, limit, key)
 		if err != nil {
@@ -53,41 +54,52 @@ func SearchWeb(ctx context.Context, query string, limit int) ([]SearchHit, error
 		}
 	}
 
-	// 2) Wikipedia EN
-	if hits, err := searchWikipedia(ctx, "en", query, limit); err != nil {
-		errs = append(errs, "wiki_en:"+err.Error())
-	} else {
-		all = append(all, hits...)
-	}
-
-	// 3) Wikipedia TR
-	if hits, err := searchWikipedia(ctx, "tr", query, limit); err != nil {
-		errs = append(errs, "wiki_tr:"+err.Error())
-	} else {
-		all = append(all, hits...)
-	}
-
-	// 4) DDG Instant Answer API
-	if hits, err := searchDDGInstant(ctx, query, limit); err != nil {
-		errs = append(errs, "ddg_api:"+err.Error())
-	} else {
-		all = append(all, hits...)
-	}
-
-	// 5) DDG HTML (http get, chrome yok)
+	// 2) DuckDuckGo HTML — genel web
 	if len(all) < limit {
-		if hits, err := searchDDGHTML(ctx, query, limit); err != nil {
+		hits, err := searchDDGHTML(ctx, query, limit*2)
+		if err != nil {
 			errs = append(errs, "ddg_html:"+err.Error())
 		} else {
 			all = append(all, hits...)
 		}
 	}
 
-	out := dedupeHits(all, limit)
-	if len(out) == 0 {
-		// Son çare: wiki arama sayfası + doğrudan wiki title guess
-		out = fallbackWikiURLs(query)
+	// 3) Bing HTML — genel web
+	if len(all) < limit {
+		hits, err := searchBingHTML(ctx, query, limit*2)
+		if err != nil {
+			errs = append(errs, "bing:"+err.Error())
+		} else {
+			all = append(all, hits...)
+		}
 	}
+
+	// 4) DDG Instant
+	if len(all) < limit {
+		hits, err := searchDDGInstant(ctx, query, limit)
+		if err != nil {
+			errs = append(errs, "ddg_api:"+err.Error())
+		} else {
+			all = append(all, hits...)
+		}
+	}
+
+	// 5) Wikipedia — sadece yedek / ek (tek başına ana kaynak değil)
+	if len(all) < 2 {
+		if hits, err := searchWikipedia(ctx, "en", query, 3); err != nil {
+			errs = append(errs, "wiki_en:"+err.Error())
+		} else {
+			all = append(all, hits...)
+		}
+		if hits, err := searchWikipedia(ctx, "tr", query, 2); err != nil {
+			errs = append(errs, "wiki_tr:"+err.Error())
+		} else {
+			all = append(all, hits...)
+		}
+	}
+
+	// Wiki ağırlığını kır: mümkünse non-wiki önce
+	out := preferNonWiki(dedupeHits(all, limit*2), limit)
 	if len(out) == 0 {
 		msg := "all_search_backends_empty"
 		if len(errs) > 0 {
@@ -96,6 +108,25 @@ func SearchWeb(ctx context.Context, query string, limit int) ([]SearchHit, error
 		return nil, fmt.Errorf("%s", msg)
 	}
 	return out, nil
+}
+
+func preferNonWiki(hits []SearchHit, limit int) []SearchHit {
+	var web, wiki []SearchHit
+	for _, h := range hits {
+		if strings.Contains(strings.ToLower(h.URL), "wikipedia.org") {
+			wiki = append(wiki, h)
+		} else {
+			web = append(web, h)
+		}
+	}
+	out := append([]SearchHit{}, web...)
+	if len(out) < limit {
+		out = append(out, wiki...)
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
 
 func searchBrave(ctx context.Context, query string, limit int, key string) ([]SearchHit, error) {
@@ -256,8 +287,8 @@ func searchDDGHTML(ctx context.Context, query string, limit int) ([]SearchHit, e
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; SiryanResearch/1.0)")
-	req.Header.Set("Accept", "text/html")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
 	resp, err := searchHTTP.Do(req)
 	if err != nil {
@@ -270,9 +301,8 @@ func searchDDGHTML(ctx context.Context, query string, limit int) ([]SearchHit, e
 	}
 	html := string(body)
 
-	// result__a href + text
 	re := regexp.MustCompile(`(?s)<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>`)
-	matches := re.FindAllStringSubmatch(html, limit*3)
+	matches := re.FindAllStringSubmatch(html, limit*4)
 	var hits []SearchHit
 	seen := map[string]bool{}
 	for _, m := range matches {
@@ -297,24 +327,45 @@ func searchDDGHTML(ctx context.Context, query string, limit int) ([]SearchHit, e
 	return hits, nil
 }
 
-func fallbackWikiURLs(query string) []SearchHit {
-	q := strings.TrimSpace(query)
-	if q == "" {
-		return nil
+func searchBingHTML(ctx context.Context, query string, limit int) ([]SearchHit, error) {
+	u := "https://www.bing.com/search?q=" + url.QueryEscape(query) + "&setlang=en-us"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
 	}
-	title := strings.ReplaceAll(q, " ", "_")
-	return []SearchHit{
-		{
-			URL:     "https://en.wikipedia.org/wiki/" + url.PathEscape(title),
-			Title:   q + " (Wikipedia EN guess)",
-			Snippet: "Fallback direct wiki path",
-		},
-		{
-			URL:     "https://tr.wikipedia.org/wiki/" + url.PathEscape(title),
-			Title:   q + " (Wikipedia TR guess)",
-			Snippet: "Fallback direct wiki path",
-		},
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
+	resp, err := searchHTTP.Do(req)
+	if err != nil {
+		return nil, err
 	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
+	html := string(body)
+
+	// Bing algo sonuçları
+	re := regexp.MustCompile(`(?s)<li class="b_algo".*?<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>`)
+	matches := re.FindAllStringSubmatch(html, limit*4)
+	var hits []SearchHit
+	seen := map[string]bool{}
+	for _, m := range matches {
+		href := htmlUnescape(m[1])
+		title := stripTags(m[2])
+		if !strings.HasPrefix(href, "http") || seen[href] || strings.Contains(href, "bing.com") || strings.Contains(href, "microsoft.com") {
+			continue
+		}
+		seen[href] = true
+		hits = append(hits, SearchHit{URL: href, Title: title, Snippet: ""})
+		if len(hits) >= limit {
+			break
+		}
+	}
+	return hits, nil
 }
 
 func dedupeHits(items []SearchHit, limit int) []SearchHit {
